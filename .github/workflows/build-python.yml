@@ -1,0 +1,113 @@
+name: Build Python 3.12 for Termux ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Build Python 3.12 for ARM64
+      run: |
+        docker run --rm --platform linux/arm64 \
+          -v ${{ github.workspace }}:/workspace \
+          -w /workspace \
+          python:3.12-bookworm \
+          bash -c '
+            set -e
+            
+            echo "=== Installing build dependencies ==="
+            apt-get update && apt-get install -y \
+              build-essential cmake \
+              libffi-dev libssl-dev libsqlite3-dev \
+              zlib1g-dev libbz2-dev liblzma-dev \
+              libncurses5-dev libreadline-dev \
+              libgdbm-dev libexpat1-dev \
+              && rm -rf /var/lib/apt/lists/*
+            
+            echo "=== Downloading Python 3.12 source ==="
+            cd /tmp
+            wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz
+            tar -xzf Python-3.12.0.tgz
+            cd Python-3.12.0
+            
+            echo "=== Configuring Python build ==="
+            ./configure \
+              --prefix=/opt/python3.12 \
+              --enable-optimizations \
+              --enable-shared \
+              LDFLAGS="-Wl,-rpath,/opt/python3.12/lib"
+            
+            echo "=== Compiling Python (this takes 10-20 minutes) ==="
+            make -j$(nproc)
+            make install
+            
+            echo "=== Verifying installation ==="
+            /opt/python3.12/bin/python3.12 --version
+            /opt/python3.12/bin/pip3.12 --version
+            
+            echo "=== Creating standalone package ==="
+            cd /opt
+            tar -czvf /workspace/python3.12-arm64-termux.tar.gz python3.12/
+            
+            echo "=== Package info ==="
+            ls -lh /workspace/python3.12-arm64-termux.tar.gz
+          '
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: python3.12-arm64-termux
+        path: python3.12-arm64-termux.tar.gz
+        retention-days: 90
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: python3.12-arm64-${{ github.run_number }}
+        name: Python 3.12 ARM64 for Termux - Build #${{ github.run_number }}
+        files: python3.12-arm64-termux.tar.gz
+        body: |
+          ## Python 3.12 ARM64 for Termux
+          
+          独立的 Python 3.12 安装包，适用于 Termux (Android ARM64)
+          
+          ### 安装方法
+          
+          ```bash
+          # 1. 下载并解压
+          tar -xzvf python3.12-arm64-termux.tar.gz -C $HOME
+          
+          # 2. 添加到 PATH
+          export PATH="$HOME/python3.12/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/python3.12/lib:$LD_LIBRARY_PATH"
+          
+          # 3. 验证
+          python3.12 --version
+          ```
+          
+          ### 使用 OpenSquilla
+          
+          ```bash
+          # 解压 OpenSquilla 包
+          tar -xzvf opensquilla-arm64.tar.gz -C $HOME
+          
+          # 激活并运行
+          source ~/opensquilla/bin/activate
+          opensquilla
+          ```
+          
+          ---
+          编译时间: ${{ github.event.head_commit.timestamp }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
