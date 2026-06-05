@@ -1,36 +1,39 @@
-# OpenSquilla ARM64 安装指南
+# OpenSquilla ARM64 一键安装包
 
-## 在 Termux 中快速安装
+自动编译 OpenSquilla ARM64 版本，适用于 Android Termux。
+
+## 📦 下载安装包
+
+1. 进入 [Actions](../../actions) 页面
+2. 点击最新的成功构建
+3. 在 Artifacts 中下载 `opensquilla-arm64-package`
+4. 或在 [Releases](../../releases) 页面下载
+
+## 🚀 安装方法
 
 ```bash
-# 1. 安装 Python
-pkg install python
+# 1. 解压到用户目录
+tar -xzvf opensquilla-arm64.tar.gz -C $HOME
 
-# 2. 直接安装 OpenSquilla
-pip install opensquilla
+# 2. 激活虚拟环境
+source $HOME/opensquilla/bin/activate
 
-# 3. 运行
+# 3. 运行 OpenSquilla
 opensquilla
 ```
 
-## 如果遇到编译错误
+## ⚙️ 手动触发编译
 
-某些依赖需要编译，如果失败，尝试：
+1. 进入 Actions 页面
+2. 选择 "Build OpenSquilla ARM64 Package"
+3. 点击 "Run workflow"
+4. 等待编译完成（约 30-60 分钟）
 
-```bash
-# 安装编译工具
-pkg install clang cmake rust
+## 📋 系统要求
 
-# 重新安装
-pip install opensquilla
-```
+- Android 7.0+
+- Termux (最新版)
+- ARM64 架构
 
-## 检查 Python 版本
-
-OpenSquilla 需要 Python 3.12+
-
-```bash
-python --version
-```
-
-如果版本过低，需要升级 Termux 或使用 proot-distro。
+---
+*此项目自动编译 OpenSquilla 的 ARM64 版本*
