@@ -44,7 +44,6 @@ jobs:
             echo "=== Configuring Python build ==="
             ./configure \
               --prefix=/opt/python3.12 \
-              --enable-optimizations \
               --enable-shared \
               LDFLAGS="-Wl,-rpath,/opt/python3.12/lib"
             
