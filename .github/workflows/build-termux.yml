@@ -1,0 +1,180 @@
+name: Build OpenSquilla for Termux
+
+on:
+  workflow_dispatch:  # 手动触发
+  release:
+    types: [published]
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04-arm  # GitHub ARM64 runner
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libffi-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libjpeg-dev \
+            libpng-dev \
+            zlib1g-dev \
+            libfreetype6-dev \
+            libxml2-dev \
+            libxslt1-dev
+      
+      - name: Create virtual environment
+        run: |
+          python -m venv opensquilla-venv
+          source opensquilla-venv/bin/activate
+          pip install --upgrade pip wheel setuptools
+      
+      - name: Download OpenSquilla wheel
+        run: |
+          wget -q https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/opensquilla-0.3.1-py3-none-any.whl
+      
+      - name: Install OpenSquilla
+        run: |
+          source opensquilla-venv/bin/activate
+          pip install opensquilla-0.3.1-py3-none-any.whl
+      
+      - name: Verify installation
+        run: |
+          source opensquilla-venv/bin/activate
+          python -c "import opensquilla; print(f'OpenSquilla version: {opensquilla.__version__}')"
+          pip list
+      
+      - name: Create installation script
+        run: |
+          cat > install-termux.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "========================================"
+          echo "  OpenSquilla Termux 安装"
+          echo "========================================"
+          
+          # 检测架构
+          ARCH=$(uname -m)
+          echo "系统架构: $ARCH"
+          
+          if [[ "$ARCH" != "aarch64" && "$ARCH" != "arm64" ]]; then
+              echo "警告: 此包为 ARM64 架构编译"
+              echo "当前架构: $ARCH"
+              read -p "是否继续安装? (y/n): " confirm
+              if [[ "$confirm" != "y" ]]; then
+                  exit 1
+              fi
+          fi
+          
+          # 解压虚拟环境
+          echo "解压虚拟环境..."
+          mkdir -p ~/opensquilla
+          tar -xzf opensquilla-termux-arm64.tar.gz -C ~/opensquilla --strip-components=1
+          
+          # 创建启动脚本
+          cat > ~/opensquilla/bin/opensquilla-run << 'RUNEOF'
+          #!/bin/bash
+          source ~/opensquilla/bin/activate
+          opensquilla "$@"
+          RUNEOF
+          chmod +x ~/opensquilla/bin/opensquilla-run
+          
+          # 创建便捷链接
+          ln -sf ~/opensquilla/bin/opensquilla-run ~/opensquilla-run
+          
+          echo ""
+          echo "========================================"
+          echo "  安装完成!"
+          echo "========================================"
+          echo ""
+          echo "使用方法:"
+          echo "  ~/opensquilla-run --help"
+          echo "  ~/opensquilla-run onboard"
+          echo ""
+          EOF
+          chmod +x install-termux.sh
+      
+      - name: Package everything
+        run: |
+          tar -czf opensquilla-termux-arm64.tar.gz opensquilla-venv/
+          
+          # 创建最终发布包
+          mkdir -p release-package
+          mv opensquilla-termux-arm64.tar.gz release-package/
+          mv install-termux.sh release-package/
+          
+          # 创建 README
+          cat > release-package/README.md << 'EOF'
+          # OpenSquilla Termux 预编译包
+          
+          ## 系统要求
+          - Termux (最新版本)
+          - Android 7.0+
+          - ARM64 设备 (aarch64)
+          - 约 500MB 存储空间
+          
+          ## 安装方法
+          
+          1. 在 Termux 中下载此包
+          2. 运行安装脚本:
+             ```bash
+             chmod +x install-termux.sh
+             ./install-termux.sh
+             ```
+          3. 启动 OpenSquilla:
+             ```bash
+             ~/opensquilla-run --help
+             ```
+          
+          ## 首次使用
+          
+          运行配置向导:
+          ```bash
+          ~/opensquilla-run onboard
+          ```
+          
+          按提示选择 LLM 提供商并输入 API Key。
+          
+          ## 更多信息
+          
+          - 官网: https://opensquilla.ai
+          - GitHub: https://github.com/opensquilla/opensquilla
+          - 文档: https://docs.opensquilla.ai
+          EOF
+          
+          # 打包
+          cd release-package
+          tar -czf ../opensquilla-termux-release.tar.gz *
+          cd ..
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-termux-arm64
+          path: |
+            opensquilla-termux-release.tar.gz
+            release-package/
+          retention-days: 30
+      
+      - name: Create release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: opensquilla-termux-release.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,80 @@
+{
+  "name": "opensquilla-termux-installer",
+  "version": "1.0.0",
+  "description": "OpenSquilla one-click installer for Termux (Android)",
+  "author": "Weaver",
+  "created": "2026-06-05",
+  "opensquilla_version": "0.3.1",
+  "min_termux_version": "0.118.0",
+  "supported_architectures": ["aarch64", "armv7", "armv7l", "x86_64", "i686"],
+  "files": {
+    "install-opensquilla-termux.sh": {
+      "type": "script",
+      "description": "Main installation script",
+      "required": true,
+      "executable": true
+    },
+    "build-offline-package.sh": {
+      "type": "script",
+      "description": "Offline package builder",
+      "required": false,
+      "executable": true
+    },
+    "README.md": {
+      "type": "documentation",
+      "description": "Full installation guide",
+      "required": true
+    },
+    "QUICKSTART.md": {
+      "type": "documentation",
+      "description": "Quick start guide",
+      "required": false
+    },
+    "MANIFEST.md": {
+      "type": "documentation",
+      "description": "File manifest and technical details",
+      "required": false
+    },
+    "package.json": {
+      "type": "metadata",
+      "description": "Package metadata",
+      "required": false
+    }
+  },
+  "requirements": {
+    "storage": "2GB",
+    "ram": "2GB (4GB recommended)",
+    "network": "stable connection for installation",
+    "android_version": "7.0+ (API 24+)"
+  },
+  "installation_time": {
+    "fast_network": "10-15 minutes",
+    "slow_network": "20-30 minutes",
+    "offline": "5-10 minutes"
+  },
+  "post_install": {
+    "binary": "~/opensquilla",
+    "uninstaller": "~/uninstall-opensquilla.sh"
+  },
+  "changelog": {
+    "1.0.0": {
+      "date": "2026-06-05",
+      "changes": [
+        "Initial release",
+        "Support for OpenSquilla v0.3.1",
+        "Ubuntu proot-distro based installation",
+        "Automatic architecture detection",
+        "Uninstaller script generation"
+      ]
+    }
+  },
+  "license": {
+    "installer": "MIT",
+    "opensquilla": "Apache-2.0"
+  },
+  "links": {
+    "opensquilla_repo": "https://github.com/opensquilla/opensquilla",
+    "termux_repo": "https://github.com/termux/termux-app",
+    "proot_distro": "https://github.com/termux/proot-distro"
+  }
+}

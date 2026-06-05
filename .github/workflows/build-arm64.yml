@@ -1,0 +1,100 @@
+name: Build OpenSquilla for ARM64/Android
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU for ARM64
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build in ARM64 container
+      run: |
+        docker run --rm --platform linux/arm64 \
+          -v ${{ github.workspace }}:/workspace \
+          -w /workspace \
+          python:3.12-slim-bookworm \
+          bash -c "
+            set -e
+            echo '=== Installing dependencies ==='
+            apt-get update && apt-get install -y \
+              git curl build-essential cmake \
+              libsqlite3-dev libffi-dev libssl-dev \
+              && rm -rf /var/lib/apt/lists/*
+            
+            echo '=== Installing OpenSquilla ==='
+            pip install --upgrade pip uv
+            uv pip install --system opensquilla --python 3.12
+            
+            echo '=== Creating distribution package ==='
+            pip freeze > requirements.txt
+            
+            # 创建启动脚本
+            cat > start-opensquilla.sh << 'EOF'
+            #!/bin/bash
+            # OpenSquilla 启动脚本
+            source venv/bin/activate 2>/dev/null || true
+            opensquilla \"\$@\"
+            EOF
+            chmod +x start-opensquilla.sh
+            
+            # 打包
+            tar -czvf opensquilla-arm64.tar.gz \\
+              requirements.txt \\
+              start-opensquilla.sh
+            
+            echo '=== Build complete ==='
+            ls -lh opensquilla-arm64.tar.gz
+          "
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: opensquilla-arm64
+        path: |
+          opensquilla-arm64.tar.gz
+          requirements.txt
+          start-opensquilla.sh
+        retention-days: 30
+
+    - name: Create Release
+      if: github.event_name == 'workflow_dispatch'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v0.3.1-arm64-${{ github.run_number }}
+        name: OpenSquilla ARM64 Build #${{ github.run_number }}
+        files: |
+          opensquilla-arm64.tar.gz
+          requirements.txt
+          start-opensquilla.sh
+        body: |
+          ## OpenSquilla ARM64/Android Build
+          
+          **Version:** v0.3.1
+          **Platform:** linux/arm64 (Android Termux compatible)
+          
+          ### 使用方法
+          
+          1. 下载 `opensquilla-arm64.tar.gz`
+          2. 在 Termux 中解压：`tar -xzvf opensquilla-arm64.tar.gz`
+          3. 安装依赖：`pip install -r requirements.txt`
+          4. 运行：`./start-opensquilla.sh`
+          
+          ---
+          Build time: ${{ github.event.head_commit.timestamp }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
