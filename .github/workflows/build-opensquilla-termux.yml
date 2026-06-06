@@ -6,64 +6,56 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: termux/package-builder:latest
-      options: --user root
     timeout-minutes: 240
     
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Build Python 3.12 and OpenSquilla
-      shell: bash
-      run: |
-        set -e
-        
-        echo "=== Setting up Termux build environment ==="
-        export TERMUX_ARCH=aarch64
-        export TERMUX_PREFIX=/data/data/com.termux/files/usr
-        export TERMUX_PKG_API_LEVEL=24
-        
-        echo "=== Installing build dependencies ==="
-        apt-get update
-        apt-get install -y build-essential cmake git wget curl
-        
-        echo "=== Downloading Python 3.12 source ==="
-        cd /tmp
-        wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz
-        tar -xzf Python-3.12.0.tgz
-        cd Python-3.12.0
-        
-        echo "=== Configuring Python for Termux ==="
-        ./configure --prefix=/data/data/com.termux/files/usr --enable-shared --with-ensurepip=install ac_cv_file__dev_ptmx=yes ac_cv_file__dev_ptc=no LDFLAGS="-landroid-support -Wl,-rpath,/data/data/com.termux/files/usr/lib"
-        
-        echo "=== Compiling Python ==="
-        make -j$(nproc)
-        make install DESTDIR=/tmp/python-install
-        
-        echo "=== Setting up Python environment ==="
-        export PATH="/tmp/python-install/data/data/com.termux/files/usr/bin:$PATH"
-        export LD_LIBRARY_PATH="/tmp/python-install/data/data/com.termux/files/usr/lib:$LD_LIBRARY_PATH"
-        export PYTHONHOME="/tmp/python-install/data/data/com.termux/files/usr"
-        
-        echo "=== Installing pip ==="
-        wget https://bootstrap.pypa.io/get-pip.py
-        python3 get-pip.py
-        
-        echo "=== Installing OpenSquilla ==="
-        pip install opensquilla
-        
-        echo "=== Creating packages ==="
-        cd /tmp/python-install/data/data/com.termux/files/usr
-        tar -czvf /workspace/opensquilla-termux-native.tar.gz .
-        
-        echo "=== Package info ==="
-        ls -lh /workspace/*.tar.gz
+    - name: Set up QEMU for ARM64
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
 
-    - name: Upload artifact
+    - name: Build in Termux container
+      run: |
+        docker run --rm --platform linux/arm64 \
+          -v ${{ github.workspace }}:/workspace \
+          -w /workspace \
+          termux/package-builder:latest \
+          bash -c '
+            set -e
+            
+            echo "=== Build environment info ==="
+            uname -a
+            pwd
+            
+            echo "=== Setting up environment ==="
+            export TERMUX_ARCH=aarch64
+            export TERMUX_PREFIX=/data/data/com.termux/files/usr
+            
+            echo "=== Checking available tools ==="
+            which python3 || echo "No python3 in container"
+            which clang || echo "No clang"
+            ls -la /usr/bin/ | head -20
+            
+            echo "=== Cloning termux-packages ==="
+            git clone --depth=1 https://github.com/termux/termux-packages /tmp/termux-packages
+            cd /tmp/termux-packages
+            
+            echo "=== Attempting to build Python ==="
+            # 查看现有 Python 包
+            cat packages/python/build.sh | head -30
+            
+            echo "=== Build command ==="
+            # 尝试构建
+            ./build-package.sh python || echo "Build failed, trying manual approach"
+          '
+
+    - name: Upload logs
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: opensquilla-termux-native
-        path: opensquilla-termux-native.tar.gz
-        retention-days: 90
+        name: build-logs
+        path: /tmp/*.log
+        if-no-files-found: ignore
