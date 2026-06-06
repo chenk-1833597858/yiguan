@@ -1,0 +1,117 @@
+name: Build OpenSquilla for Termux (Native)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: termux/package-builder:latest
+      options: --user root
+    timeout-minutes: 240
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build OpenSquilla for Termux
+      run: |
+        set -e
+        
+        echo "=== Setting up Termux build environment ==="
+        export TERMUX_ARCH=aarch64
+        export TERMUX_PREFIX=/data/data/com.termux/files/usr
+        export TERMUX_PKG_API_LEVEL=24
+        
+        echo "=== Cloning Termux packages ==="
+        git clone --depth=1 https://github.com/termux/termux-packages
+        
+        cd termux-packages
+        
+        echo "=== Installing build dependencies ==="
+        apt-get update
+        apt-get install -y \
+          build-essential cmake git wget curl \
+          libffi-dev libssl-dev libsqlite3-dev \
+          zlib1g-dev libbz2-dev liblzma-dev \
+          libncurses5-dev libreadline-dev \
+          libexpat1-dev libgdbm-dev
+        
+        echo "=== Building Python 3.12 ==="
+        # 先构建 Python 3.12
+        ./scripts/setup-termux.sh || true
+        ./build-package.sh python || true
+        
+        echo "=== Installing Python to build environment ==="
+        # 如果上面的构建失败，手动编译 Python
+        if [ ! -f output/*.deb ]; then
+          echo "Manual Python build..."
+          cd /tmp
+          wget -q https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz
+          tar -xzf Python-3.12.0.tgz
+          cd Python-3.12.0
+          
+          # 为 Android/Termux 打补丁
+          cat > setup_android.py << 'PYEOF'
+import sysconfig
+import os
+
+# Android 特定配置
+sysconfig._INSTALL_SCHEMES['posix_prefix']['purelib'] = '$PREFIX/lib/python3.12/site-packages'
+sysconfig._INSTALL_SCHEMES['posix_prefix']['platlib'] = '$PREFIX/lib/python3.12/site-packages'
+PYEOF
+          
+          ./configure \
+            --prefix=/data/data/com.termux/files/usr \
+            --enable-shared \
+            --with-ensurepip=install \
+            ac_cv_file__dev_ptmx=yes \
+            ac_cv_file__dev_ptc=no \
+            LDFLAGS="-landroid-support -Wl,-rpath,/data/data/com.termux/files/usr/lib"
+          
+          make -j$(nproc)
+          make install DESTDIR=/tmp/python-install
+          
+          # 创建 tar.gz
+          cd /tmp/python-install
+          tar -czvf /workspace/python3.12-termux-native.tar.gz .
+        fi
+        
+        echo "=== Installing OpenSquilla dependencies ==="
+        # 在 Python 环境中安装依赖
+        export PATH="/tmp/python-install/data/data/com.termux/files/usr/bin:$PATH"
+        export LD_LIBRARY_PATH="/tmp/python-install/data/data/com.termux/files/usr/lib:$LD_LIBRARY_PATH"
+        
+        # 下载并安装 pip（如果没有）
+        if [ ! -f /tmp/python-install/data/data/com.termux/files/usr/bin/pip ]; then
+          wget -q https://bootstrap.pypa.io/get-pip.py
+          python3.12 get-pip.py
+        fi
+        
+        echo "=== Installing OpenSquilla ==="
+        pip install opensquilla
+        
+        echo "=== Creating OpenSquilla package ==="
+        # 打包整个 Python 虚拟环境
+        cd /tmp/python-install/data/data/com.termux/files/usr
+        tar -czvf /workspace/opensquilla-termux-native.tar.gz .
+        
+        echo "=== Package info ==="
+        ls -lh /workspace/*.tar.gz
+
+    - name: Upload Python artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: python3.12-termux-native
+        path: python3.12-termux-native.tar.gz
+        retention-days: 90
+        if-no-files-found: ignore
+
+    - name: Upload OpenSquilla artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: opensquilla-termux-native
+        path: opensquilla-termux-native.tar.gz
+        retention-days: 90
+        if-no-files-found: ignore
