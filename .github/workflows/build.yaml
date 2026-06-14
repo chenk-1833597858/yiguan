@@ -1,6 +1,12 @@
 name: Build Termux Chromium Crawler
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yaml'
+      - 'src/**'
+      - 'scripts/**'
   workflow_dispatch:
     inputs:
       chromium_version:
