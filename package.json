@@ -1,0 +1,30 @@
+{
+  "name": "termux-chromium-crawler",
+  "version": "1.0.0",
+  "description": "Termux proot 环境下的 Chromium 无头浏览器爬虫",
+  "main": "src/crawler.js",
+  "scripts": {
+    "start": "node src/crawler.js",
+    "login": "node src/login-crawler.js"
+  },
+  "keywords": [
+    "crawler",
+    "chromium",
+    "puppeteer",
+    "termux",
+    "android",
+    "headless-browser"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer-core": "^23.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chenk-1833597858/yiguan.git"
+  }
+}

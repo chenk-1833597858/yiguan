@@ -1,0 +1,119 @@
+name: Build Termux Chromium Crawler
+
+on:
+  workflow_dispatch:
+    inputs:
+      chromium_version:
+        description: 'Chromium version (leave empty for latest)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+
+      - name: Download Chromium ARM64
+        run: |
+          # 获取最新版本号
+          if [ -z "${{ github.event.inputs.chromium_version }}" ]; then
+            VERSION=$(curl -s "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/LAST_CHANGE")
+          else
+            VERSION="${{ github.event.inputs.chromium_version }}"
+          fi
+          echo "Chromium version: $VERSION"
+          echo "CHROMIUM_VERSION=$VERSION" >> $GITHUB_ENV
+          
+          # 下载 Chromium
+          wget -q "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/${VERSION}/chrome-linux.zip"
+          unzip -q chrome-linux.zip
+          mv chrome-linux chromium
+
+      - name: Clone and patch puppeteer-core
+        run: |
+          git clone --depth=1 --branch=v23.3.0 https://github.com/puppeteer/puppeteer.git
+          cd puppeteer
+          
+          # 修改 platform 检测 - 允许 android 平台
+          find packages/puppeteer-core/src -name "*.ts" -type f | while read file; do
+            # 替换 platform 检测
+            sed -i 's/process\.platform !== "linux"/process.platform !== "linux" \&\& process.platform !== "android"/g' "$file"
+            sed -i 's/process\.platform === "linux"/process.platform === "linux" || process.platform === "android"/g' "$file"
+            sed -i "s/process\.platform !== 'linux'/process.platform !== 'linux' \&\& process.platform !== 'android'/g" "$file"
+            sed -i "s/process\.platform === 'linux'/process.platform === 'linux' || process.platform === 'android'/g" "$file"
+          done
+          
+          # 安装依赖
+          npm install -g pnpm
+          pnpm install --frozen-lockfile || pnpm install
+          
+          # 构建
+          pnpm run build --filter=puppeteer-core
+
+      - name: Create package
+        run: |
+          mkdir -p release
+          
+          # 打包 Chromium
+          tar -czvf release/chromium-arm64.tar.gz chromium
+          
+          # 复制 puppeteer-core 构建产物
+          cp -r puppeteer/packages/puppeteer-core/lib release/puppeteer-core-patched
+          
+          # 复制源文件
+          cp -r src release/
+          cp -r scripts release/
+          
+          # 创建版本信息
+          echo "CHROMIUM_VERSION=${{ env.CHROMIUM_VERSION }}" > release/VERSION
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/VERSION
+          echo "COMMIT_SHA=${{ github.sha }}" >> release/VERSION
+          
+          # 打包整体
+          tar -czvf termux-crawler-dist.tar.gz release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-crawler-dist
+          path: termux-crawler-dist.tar.gz
+          retention-days: 30
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Termux Chromium Crawler v${{ github.run_number }}
+          body: |
+            ## Termux Chromium Crawler
+            
+            ### 包含内容
+            - Chromium ARM64 (版本: ${{ env.CHROMIUM_VERSION }})
+            - Puppeteer-core 修改版 (支持 Android/proot 平台)
+            - 安装脚本和爬虫模板
+            
+            ### 使用方法
+            1. 下载 `termux-crawler-dist.tar.gz`
+            2. 在 Termux 中运行安装脚本
+            
+            详细说明见 README.md
+          files: termux-crawler-dist.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

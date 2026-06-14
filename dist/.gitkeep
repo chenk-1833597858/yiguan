@@ -1,0 +1,2 @@
+# 此目录用于存放编译产物
+# GitHub Actions 会在此生成 Chromium 和修改后的 puppeteer-core
