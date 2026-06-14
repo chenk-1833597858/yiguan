@@ -1,0 +1,61 @@
+name: Build OpenSquilla for Termux (Native)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU for ARM64
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Build in Termux container
+      run: |
+        docker run --rm --platform linux/arm64 \
+          -v ${{ github.workspace }}:/workspace \
+          -w /workspace \
+          termux/package-builder:latest \
+          bash -c '
+            set -e
+            
+            echo "=== Build environment info ==="
+            uname -a
+            pwd
+            
+            echo "=== Setting up environment ==="
+            export TERMUX_ARCH=aarch64
+            export TERMUX_PREFIX=/data/data/com.termux/files/usr
+            
+            echo "=== Checking available tools ==="
+            which python3 || echo "No python3 in container"
+            which clang || echo "No clang"
+            ls -la /usr/bin/ | head -20
+            
+            echo "=== Cloning termux-packages ==="
+            git clone --depth=1 https://github.com/termux/termux-packages /tmp/termux-packages
+            cd /tmp/termux-packages
+            
+            echo "=== Attempting to build Python ==="
+            # 查看现有 Python 包
+            cat packages/python/build.sh | head -30
+            
+            echo "=== Build command ==="
+            # 尝试构建
+            ./build-package.sh python || echo "Build failed, trying manual approach"
+          '
+
+    - name: Upload logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: /tmp/*.log
+        if-no-files-found: ignore

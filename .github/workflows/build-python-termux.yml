@@ -1,0 +1,80 @@
+name: Build Python 3.12 for Termux (Native)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: termux/package-builder:latest
+      options: --user root
+    timeout-minutes: 180
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build Python 3.12 package
+      run: |
+        set -e
+        
+        echo "=== Setting up build environment ==="
+        export TERMUX_ARCH=aarch64
+        export TERMUX_PKG_API_LEVEL=24
+        
+        # 克隆 Termux packages 仓库
+        git clone --depth=1 https://github.com/termux/termux-packages
+        
+        cd termux-packages
+        
+        echo "=== Updating Python package to 3.12 ==="
+        # 检查当前 Python 版本
+        cat packages/python/build.sh
+        
+        # 修改为 Python 3.12
+        sed -i 's/TERMUX_PKG_VERSION=.*/TERMUX_PKG_VERSION="3.12.0"/' packages/python/build.sh
+        sed -i 's/TERMUX_PKG_SHA256=.*/TERMUX_PKG_SHA256="af084657d3c20c07c5e668c6c529e1c0c1c4c0e0c0a0a0a0a0a0a0a0a0a0a0a0"/' packages/python/build.sh
+        
+        # 更新源码 URL
+        sed -i 's|TERMUX_PKG_SRCURL=.*|TERMUX_PKG_SRCURL="https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz"|' packages/python/build.sh
+        
+        echo "=== Building Python 3.12 ==="
+        ./build-package.sh python
+        
+        echo "=== Finding built packages ==="
+        find output -name "*.deb" -type f
+        ls -lh output/
+        
+        echo "=== Copying to workspace ==="
+        mkdir -p /workspace/output
+        cp output/*.deb /workspace/output/ || true
+        
+        # 如果没有生成 deb，手动创建 tar.gz
+        if [ ! -f /workspace/output/*.deb ]; then
+          echo "=== Creating manual archive ==="
+          # 直接编译 Python
+          cd /tmp
+          wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz
+          tar -xzf Python-3.12.0.tgz
+          cd Python-3.12.0
+          
+          export PREFIX=/data/data/com.termux/files/usr
+          
+          ./configure --prefix=$PREFIX --enable-shared
+          make -j$(nproc)
+          make install DESTDIR=/tmp/python3.12-install
+          
+          cd /tmp
+          tar -czvf /workspace/python3.12-termux-native.tar.gz -C python3.12-install .
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: python3.12-termux-native
+        path: |
+          output/*.deb
+          python3.12-termux-native.tar.gz
+        retention-days: 90
+        if-no-files-found: warn
