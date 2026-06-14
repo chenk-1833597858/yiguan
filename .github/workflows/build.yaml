@@ -128,24 +128,14 @@ jobs:
           # 修改 platform 检测 - 允许 android 平台
           echo "应用 Android 平台补丁..."
           
-          # 创建补丁脚本
-          cat > apply_patch.sh << 'PATCH_EOF'
-#!/bin/bash
-# 补丁所有 TypeScript 文件中的 platform 检测
-
-find packages/puppeteer-core/src -name "*.ts" -type f | while read file; do
-  # 添加 android 到平台检测
-  sed -i 's/process\.platform !== "linux"/process.platform !== "linux" \&\& process.platform !== "android"/g' "$file"
-  sed -i 's/process\.platform === "linux"/process.platform === "linux" || process.platform === "android"/g' "$file"
-  sed -i "s/process\.platform !== 'linux'/process.platform !== 'linux' \&\& process.platform !== 'android'/g" "$file"
-  sed -i "s/process\.platform === 'linux'/process.platform === 'linux' || process.platform === 'android'/g" "$file"
-  
-  # 修改路径查找逻辑（添加 android case）
-  sed -i '/case "linux":/a\        case "android":' "$file" 2>/dev/null || true
-done
-
-PATCH_EOF
-          
+          # 创建补丁脚本（不用 heredoc，避免 YAML 解析问题）
+          echo '#!/bin/bash' > apply_patch.sh
+          echo 'find packages/puppeteer-core/src -name "*.ts" -type f | while read file; do' >> apply_patch.sh
+          echo '  sed -i "s/process.platform !== \"linux\"/process.platform !== \"linux\" \&\& process.platform !== \"android\"/g" "$file"' >> apply_patch.sh
+          echo '  sed -i "s/process.platform === \"linux\"/process.platform === \"linux\" || process.platform === \"android\"/g" "$file"' >> apply_patch.sh
+          echo '  sed -i "s/process.platform !== '"'"'linux'"'"'/process.platform !== '"'"'linux'"'"' \&\& process.platform !== '"'"'android'"'"'/g" "$file"' >> apply_patch.sh
+          echo '  sed -i "s/process.platform === '"'"'linux'"'"'/process.platform === '"'"'linux'"'"' || process.platform === '"'"'android'"'"'/g" "$file"' >> apply_patch.sh
+          echo 'done' >> apply_patch.sh
           chmod +x apply_patch.sh
           bash apply_patch.sh
           
@@ -170,34 +160,13 @@ PATCH_EOF
 
       - name: Create dependency list
         run: |
-          # 创建 Termux proot 需要安装的依赖列表
-          cat > release/DEPENDENCIES.txt << 'EOF'
-# Chromium ARM64 在 Termux proot Ubuntu 中需要的依赖库
-# 在 proot Ubuntu 中运行以下命令安装：
-# apt install -y $(cat DEPENDENCIES.txt | grep -v "^#" | tr "\n" " ")
-
-libnss3
-libnspr4
-libatk1.0-0
-libatk-bridge2.0-0
-libcups2
-libdrm2
-libxkbcommon0
-libxcomposite1
-libxdamage1
-libxfixes3
-libxrandr2
-libgbm1
-libasound2
-libpango-1.0-0
-libcairo2
-libatspi2.0-0
-libxshmfence1
-libx11-xcb1
-libxcb-dri3-0
-libxcb-glx0
-EOF
-          
+          mkdir -p release
+          # 创建 Termux proot 需要安装的依赖列表（不用 heredoc）
+          echo "# Chromium ARM64 在 Termux proot Ubuntu 中需要的依赖库" > release/DEPENDENCIES.txt
+          echo "libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2" >> release/DEPENDENCIES.txt
+          echo "libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1" >> release/DEPENDENCIES.txt
+          echo "libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 libxshmfence1" >> release/DEPENDENCIES.txt
+          echo "libx11-xcb1 libxcb-dri3-0 libxcb-glx0" >> release/DEPENDENCIES.txt
           echo "依赖列表已创建"
 
       - name: Create package
@@ -230,31 +199,16 @@ EOF
           echo "COMMIT_SHA=${{ github.sha }}" >> release/VERSION
           echo "USE_UNGOOGLED=${{ inputs.use_ungoogled }}" >> release/VERSION
           
-          # 创建安装说明
-          cat > release/INSTALL.txt << 'EOF'
-============================================
-Termux Chromium 爬虫安装说明
-============================================
-
-1. 解压到 Termux 用户目录：
-   tar -xzf termux-crawler-dist.tar.gz -C ~/crawler --strip-components=1
-
-2. 进入 proot Ubuntu：
-   proot-distro login ubuntu
-
-3. 安装依赖库：
-   apt install -y $(cat /root/crawler/DEPENDENCIES.txt | grep -v "^#" | tr "\n" " ")
-
-4. 安装 Node.js 依赖：
-   cd /root/crawler
-   npm install puppeteer-core
-
-5. 运行爬虫：
-   export CHROMIUM_PATH=/root/crawler/chromium/chrome
-   node crawler.js https://example.com
-
-============================================
-EOF
+          # 创建安装说明（不用 heredoc）
+          echo "============================================" > release/INSTALL.txt
+          echo "Termux Chromium 爬虫安装说明" >> release/INSTALL.txt
+          echo "============================================" >> release/INSTALL.txt
+          echo "" >> release/INSTALL.txt
+          echo "1. 解压到 Termux 用户目录" >> release/INSTALL.txt
+          echo "2. 进入 proot Ubuntu 安装依赖" >> release/INSTALL.txt
+          echo "3. npm install puppeteer-core" >> release/INSTALL.txt
+          echo "4. export CHROMIUM_PATH=..." >> release/INSTALL.txt
+          echo "5. node crawler.js URL" >> release/INSTALL.txt
           
           # 打包整体
           tar -czvf termux-crawler-dist.tar.gz release/
