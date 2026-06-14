@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       chromium_version:
-        description: 'Chromium version (leave empty for latest)'
+        description: 'Chromium version (leave empty for latest snapshot)'
         required: false
         default: ''
+      use_ungoogled:
+        description: 'Use ungoogled-chromium (lighter, no Google services)'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   build:
@@ -22,57 +27,192 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get install -y wget unzip curl file
 
       - name: Download Chromium ARM64
+        id: download-chromium
         run: |
-          # 获取最新版本号
-          if [ -z "${{ github.event.inputs.chromium_version }}" ]; then
-            VERSION=$(curl -s "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/LAST_CHANGE")
-          else
-            VERSION="${{ github.event.inputs.chromium_version }}"
-          fi
-          echo "Chromium version: $VERSION"
-          echo "CHROMIUM_VERSION=$VERSION" >> $GITHUB_ENV
+          CHROMIUM_DIR="chromium"
           
-          # 下载 Chromium
-          wget -q "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/${VERSION}/chrome-linux.zip"
-          unzip -q chrome-linux.zip
-          mv chrome-linux chromium
+          if [ "${{ inputs.use_ungoogled }}" = "true" ]; then
+            echo "使用 ungoogled-chromium..."
+            
+            # 从 ungoogled-chromium 项目获取最新 ARM64 版本
+            # 使用 Arch Linux ARM 的预编译包（更稳定）
+            UNGOOGLED_VERSION=$(curl -s "https://api.github.com/repos/ungoogled-software/ungoogled-chromium/releases/latest" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+            echo "ungoogled-chromium version: ${UNGOOGLED_VERSION}"
+            
+            # 尝试从不同来源下载
+            # 来源1: 官方 release
+            DOWNLOAD_URL="https://github.com/ungoogled-software/ungoogled-chromium/releases/download/${UNGOOGLED_VERSION}/ungoogled-chromium_${UNGOOGLED_VERSION}-1.1_linux_arm64.tar.xz"
+            
+            # 如果官方没有 ARM64，使用备用方案
+            if ! curl -sI "${DOWNLOAD_URL}" | grep -q "200"; then
+              echo "官方 release 无 ARM64 版本，使用 chromium 快照..."
+              USE_SNAPSHOT=true
+            else
+              wget -q "${DOWNLOAD_URL}" -O chromium.tar.xz
+              tar -xf chromium.tar.xz
+              mv ungoogled-chromium_* chromium
+              USE_SNAPSHOT=false
+            fi
+          else
+            USE_SNAPSHOT=true
+          fi
+            
+          if [ "${USE_SNAPSHOT}" = "true" ]; then
+            echo "使用 Chromium 官方快照..."
+            
+            # 获取版本号
+            if [ -z "${{ inputs.chromium_version }}" ]; then
+              VERSION=$(curl -s "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/LAST_CHANGE")
+            else
+              VERSION="${{ inputs.chromium_version }}"
+            fi
+            echo "Chromium snapshot version: $VERSION"
+            echo "CHROMIUM_VERSION=$VERSION" >> $GITHUB_ENV
+            
+            # 下载 Chromium
+            wget -q "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Linux_ARM64/${VERSION}/chrome-linux.zip"
+            unzip -q chrome-linux.zip
+            mv chrome-linux chromium
+          fi
+          
+          # 检查 chromium 二进制
+          if [ -f "${CHROMIUM_DIR}/chrome" ]; then
+            echo "Chromium binary found"
+            file "${CHROMIUM_DIR}/chrome"
+          elif [ -f "${CHROMIUM_DIR}/chromium" ]; then
+            mv "${CHROMIUM_DIR}/chromium" "${CHROMIUM_DIR}/chrome"
+            echo "Chromium binary renamed to chrome"
+          else
+            echo "Error: Chromium binary not found"
+            ls -la "${CHROMIUM_DIR}/"
+            exit 1
+          fi
+          
+          # 识别依赖库
+          echo "识别 Chromium 依赖库..."
+          cd chromium
+          DEPS=$(ldd chrome 2>/dev/null | grep "not found" | awk '{print $1}' || echo "")
+          if [ -n "$DEPS" ]; then
+            echo "缺少的依赖库:"
+            echo "$DEPS"
+          else
+            echo "所有依赖库已满足（在当前 Ubuntu 环境）"
+          fi
+          
+          # 记录版本信息
+          echo "CHROMIUM_DIR=${CHROMIUM_DIR}" >> $GITHUB_ENV
 
       - name: Clone and patch puppeteer-core
         run: |
-          git clone --depth=1 --branch=v23.3.0 https://github.com/puppeteer/puppeteer.git
-          cd puppeteer
+          # 克隆 puppeteer
+          git clone --depth=1 --branch=v23.3.0 https://github.com/puppeteer/puppeteer.git puppeteer-src || {
+            # 如果网络问题，使用本地缓存的逻辑
+            echo "Clone failed, trying alternative..."
+            git clone --depth=1 https://github.com/puppeteer/puppeteer.git puppeteer-src || exit 1
+          }
+          
+          cd puppeteer-src
           
           # 修改 platform 检测 - 允许 android 平台
-          find packages/puppeteer-core/src -name "*.ts" -type f | while read file; do
-            # 替换 platform 检测
-            sed -i 's/process\.platform !== "linux"/process.platform !== "linux" \&\& process.platform !== "android"/g' "$file"
-            sed -i 's/process\.platform === "linux"/process.platform === "linux" || process.platform === "android"/g' "$file"
-            sed -i "s/process\.platform !== 'linux'/process.platform !== 'linux' \&\& process.platform !== 'android'/g" "$file"
-            sed -i "s/process\.platform === 'linux'/process.platform === 'linux' || process.platform === 'android'/g" "$file"
-          done
+          echo "应用 Android 平台补丁..."
           
-          # 安装依赖
-          npm install -g pnpm
-          pnpm install --frozen-lockfile || pnpm install
+          # 创建补丁脚本
+          cat > apply_patch.sh << 'PATCH_EOF'
+#!/bin/bash
+# 补丁所有 TypeScript 文件中的 platform 检测
+
+find packages/puppeteer-core/src -name "*.ts" -type f | while read file; do
+  # 添加 android 到平台检测
+  sed -i 's/process\.platform !== "linux"/process.platform !== "linux" \&\& process.platform !== "android"/g' "$file"
+  sed -i 's/process\.platform === "linux"/process.platform === "linux" || process.platform === "android"/g' "$file"
+  sed -i "s/process\.platform !== 'linux'/process.platform !== 'linux' \&\& process.platform !== 'android'/g" "$file"
+  sed -i "s/process\.platform === 'linux'/process.platform === 'linux' || process.platform === 'android'/g" "$file"
+  
+  # 修改路径查找逻辑（添加 android case）
+  sed -i '/case "linux":/a\        case "android":' "$file" 2>/dev/null || true
+done
+
+PATCH_EOF
           
-          # 构建
-          pnpm run build --filter=puppeteer-core
+          chmod +x apply_patch.sh
+          bash apply_patch.sh
+          
+          echo "补丁已应用"
+          
+          # 安装依赖并构建
+          npm install -g pnpm@latest
+          
+          # 使用 npm 作为备选（pnpm 可能有问题）
+          pnpm install --no-frozen-lockfile || npm install || {
+            echo "依赖安装失败，尝试最小化安装..."
+            cd packages/puppeteer-core
+            npm install --legacy-peer-deps || exit 1
+          }
+          
+          # 构建 puppeteer-core
+          pnpm run build --filter=puppeteer-core || npm run build --workspace=puppeteer-core || {
+            echo "构建失败，手动构建..."
+            cd packages/puppeteer-core
+            npx tsc || exit 1
+          }
+
+      - name: Create dependency list
+        run: |
+          # 创建 Termux proot 需要安装的依赖列表
+          cat > release/DEPENDENCIES.txt << 'EOF'
+# Chromium ARM64 在 Termux proot Ubuntu 中需要的依赖库
+# 在 proot Ubuntu 中运行以下命令安装：
+# apt install -y $(cat DEPENDENCIES.txt | grep -v "^#" | tr "\n" " ")
+
+libnss3
+libnspr4
+libatk1.0-0
+libatk-bridge2.0-0
+libcups2
+libdrm2
+libxkbcommon0
+libxcomposite1
+libxdamage1
+libxfixes3
+libxrandr2
+libgbm1
+libasound2
+libpango-1.0-0
+libcairo2
+libatspi2.0-0
+libxshmfence1
+libx11-xcb1
+libxcb-dri3-0
+libxcb-glx0
+EOF
+          
+          echo "依赖列表已创建"
 
       - name: Create package
         run: |
           mkdir -p release
           
           # 打包 Chromium
+          echo "打包 Chromium..."
           tar -czvf release/chromium-arm64.tar.gz chromium
           
           # 复制 puppeteer-core 构建产物
-          cp -r puppeteer/packages/puppeteer-core/lib release/puppeteer-core-patched
+          echo "打包 puppeteer-core..."
+          if [ -d "puppeteer-src/packages/puppeteer-core/lib" ]; then
+            cp -r puppeteer-src/packages/puppeteer-core/lib release/puppeteer-core-patched
+          elif [ -d "puppeteer-src/packages/puppeteer-core/dist" ]; then
+            cp -r puppeteer-src/packages/puppeteer-core/dist release/puppeteer-core-patched
+          else
+            echo "错误: puppeteer-core 构建产物未找到"
+            find puppeteer-src/packages/puppeteer-core -type d | head -20
+            exit 1
+          fi
           
           # 复制源文件
           cp -r src release/
@@ -82,9 +222,40 @@ jobs:
           echo "CHROMIUM_VERSION=${{ env.CHROMIUM_VERSION }}" > release/VERSION
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> release/VERSION
           echo "COMMIT_SHA=${{ github.sha }}" >> release/VERSION
+          echo "USE_UNGOOGLED=${{ inputs.use_ungoogled }}" >> release/VERSION
+          
+          # 创建安装说明
+          cat > release/INSTALL.txt << 'EOF'
+============================================
+Termux Chromium 爬虫安装说明
+============================================
+
+1. 解压到 Termux 用户目录：
+   tar -xzf termux-crawler-dist.tar.gz -C ~/crawler --strip-components=1
+
+2. 进入 proot Ubuntu：
+   proot-distro login ubuntu
+
+3. 安装依赖库：
+   apt install -y $(cat /root/crawler/DEPENDENCIES.txt | grep -v "^#" | tr "\n" " ")
+
+4. 安装 Node.js 依赖：
+   cd /root/crawler
+   npm install puppeteer-core
+
+5. 运行爬虫：
+   export CHROMIUM_PATH=/root/crawler/chromium/chrome
+   node crawler.js https://example.com
+
+============================================
+EOF
           
           # 打包整体
           tar -czvf termux-crawler-dist.tar.gz release/
+          
+          # 计算文件大小
+          echo "打包完成，文件大小:"
+          ls -lh termux-crawler-dist.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -106,10 +277,34 @@ jobs:
             - Chromium ARM64 (版本: ${{ env.CHROMIUM_VERSION }})
             - Puppeteer-core 修改版 (支持 Android/proot 平台)
             - 安装脚本和爬虫模板
+            - 依赖库列表
             
-            ### 使用方法
+            ### 安装方法
+            
             1. 下载 `termux-crawler-dist.tar.gz`
-            2. 在 Termux 中运行安装脚本
+            
+            2. 在 Termux 中运行：
+               ```bash
+               mkdir -p ~/crawler
+               tar -xzf termux-crawler-dist.tar.gz -C ~/crawler --strip-components=1
+               ```
+            
+            3. 安装依赖：
+               ```bash
+               proot-distro login ubuntu
+               apt install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+                   libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+                   libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
+                   libcairo2 libatspi2.0-0
+               ```
+            
+            4. 运行爬虫：
+               ```bash
+               cd ~/crawler
+               npm install puppeteer-core
+               export CHROMIUM_PATH=/root/crawler/chromium/chrome
+               node crawler.js https://example.com
+               ```
             
             详细说明见 README.md
           files: termux-crawler-dist.tar.gz
@@ -117,3 +312,7 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        run: |
+          rm -rf chromium puppeteer-src chrome-linux.zip *.tar.xz

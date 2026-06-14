@@ -1,7 +1,6 @@
 /**
  * Termux Chromium 爬虫模板
- * 
- * 使用修改后的 puppeteer-core 在 Termux proot 环境中运行无头浏览器
+ * 改进版：更完善的错误处理和依赖检测
  * 
  * 使用方法：
  *   node crawler.js <URL> [options]
@@ -22,13 +21,23 @@ const path = require('path');
 // ===== 配置 =====
 const CONFIG = {
   // Chromium 路径（根据实际安装位置调整）
-  chromiumPath: process.env.CHROMIUM_PATH || '/root/crawler/chromium/chrome',
+  chromiumPath: process.env.CHROMIUM_PATH || 
+                process.env.CHROME_BIN || 
+                '/root/crawler/chromium/chrome',
+  
+  // 备用路径
+  fallbackPaths: [
+    '/root/crawler/chromium/chrome',
+    '/root/crawler/chromium/chromium',
+    './chromium/chrome',
+    './chromium/chromium'
+  ],
   
   // 默认超时
   timeout: 30000,
   
   // 输出目录
-  outputDir: './output',
+  outputDir: process.env.OUTPUT_DIR || './output',
   
   // User-Agent
   userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
@@ -57,24 +66,28 @@ const BROWSER_ARGS = [
   '--safebrowsing-disable-auto-update',
   '--enable-automation=false',       // 隐藏自动化标志
   '--password-store=basic',
-  '--use-mock-keychain'
+  '--use-mock-keychain',
+  '--disable-blink-features=AutomationControlled'  // 隐藏自动化特征
 ];
 
 // ===== 反检测脚本 =====
 const STEALTH_SCRIPT = `
 // 隐藏 webdriver 标志
 Object.defineProperty(navigator, 'webdriver', {
-  get: () => undefined
+  get: () => undefined,
+  configurable: true
 });
 
 // 伪装 plugins
 Object.defineProperty(navigator, 'plugins', {
-  get: () => [1, 2, 3, 4, 5]
+  get: () => [1, 2, 3, 4, 5],
+  configurable: true
 });
 
 // 伪装 languages
 Object.defineProperty(navigator, 'languages', {
-  get: () => ['zh-CN', 'zh', 'en']
+  get: () => ['zh-CN', 'zh', 'en'],
+  configurable: true
 });
 
 // 添加 chrome 对象
@@ -86,12 +99,49 @@ window.chrome = {
 };
 
 // 隐藏自动化标志
-Object.defineProperty(navigator, 'permissions', {
-  get: () => ({
-    query: () => Promise.resolve({ state: 'granted' })
-  })
-});
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+  parameters.name === 'notifications' ?
+    Promise.resolve({ state: Notification.permission }) :
+    originalQuery(parameters)
+);
 `;
+
+// ===== 辅助函数 =====
+
+// 查找 Chromium 可执行文件
+function findChromium() {
+  // 先检查配置路径
+  if (fs.existsSync(CONFIG.chromiumPath)) {
+    return CONFIG.chromiumPath;
+  }
+  
+  // 检查备用路径
+  for (const fallbackPath of CONFIG.fallbackPaths) {
+    if (fs.existsSync(fallbackPath)) {
+      console.log(`[信息] 使用备用 Chromium 路径: ${fallbackPath}`);
+      return fallbackPath;
+    }
+  }
+  
+  return null;
+}
+
+// 检查依赖库
+async function checkDependencies() {
+  const { exec } = require('child_process');
+  
+  return new Promise((resolve) => {
+    exec('ldd --version 2>&1', (error, stdout) => {
+      if (error) {
+        console.log('[警告] 无法检查 glibc 版本');
+      } else {
+        console.log(`[信息] ${stdout.split('\n')[0]}`);
+      }
+      resolve();
+    });
+  });
+}
 
 // ===== 主函数 =====
 async function main() {
@@ -106,28 +156,50 @@ async function main() {
   const outputPath = outputArg ? outputArg.split('=')[1] : 'data.json';
   
   const headless = !args.includes('--headful');
+  const verbose = args.includes('--verbose') || args.includes('-v');
   
   console.log('='.repeat(50));
   console.log('Termux Chromium Crawler');
   console.log('='.repeat(50));
   console.log(`URL: ${url}`);
   console.log(`Headless: ${headless}`);
-  console.log(`Chromium: ${CONFIG.chromiumPath}`);
   console.log('='.repeat(50));
+  
+  // 检查 Chromium
+  const chromiumPath = findChromium();
+  if (!chromiumPath) {
+    console.error('[错误] 未找到 Chromium 可执行文件');
+    console.error(`请设置 CHROMIUM_PATH 环境变量或确保 Chromium 位于:`);
+    CONFIG.fallbackPaths.forEach(p => console.error(`  - ${p}`));
+    process.exit(1);
+  }
+  console.log(`[信息] Chromium: ${chromiumPath}`);
+  
+  // 检查依赖
+  if (verbose) {
+    await checkDependencies();
+  }
   
   let browser = null;
   
   try {
     // 启动浏览器
     console.log('[启动] 正在启动 Chromium...');
-    browser = await puppeteer.launch({
-      executablePath: CONFIG.chromiumPath,
+    
+    const launchOptions = {
+      executablePath: chromiumPath,
       headless: headless ? 'new' : false,
       args: BROWSER_ARGS,
       ignoreDefaultArgs: ['--enable-automation'],
       defaultViewport: CONFIG.viewport,
       timeout: CONFIG.timeout
-    });
+    };
+    
+    if (verbose) {
+      console.log('[调试] 启动参数:', JSON.stringify(launchOptions, null, 2));
+    }
+    
+    browser = await puppeteer.launch(launchOptions);
     
     console.log('[启动] Chromium 启动成功');
     
@@ -147,12 +219,23 @@ async function main() {
     
     // 访问页面
     console.log(`[访问] 正在访问: ${url}`);
-    await page.goto(url, {
+    
+    const response = await page.goto(url, {
       waitUntil: 'networkidle2',
       timeout: CONFIG.timeout
     });
     
-    console.log('[访问] 页面加载完成');
+    if (!response) {
+      throw new Error('页面加载失败：无响应');
+    }
+    
+    console.log(`[访问] 页面加载完成 (状态码: ${response.status()})`);
+    
+    // 检测是否被重定向
+    const finalUrl = page.url();
+    if (finalUrl !== url) {
+      console.log(`[信息] 重定向到: ${finalUrl}`);
+    }
     
     // ===== 提取数据 =====
     console.log('[提取] 正在提取数据...');
@@ -183,14 +266,40 @@ async function main() {
         author: document.querySelector('meta[name="author"]')?.content || ''
       };
       
-      return { title, links, images, text, meta };
+      // 检测可能的反爬标志
+      const hasCaptcha = !!document.querySelector('[class*="captcha"], [id*="captcha"]');
+      const hasLogin = !!document.querySelector('form[action*="login"], [class*="login"]');
+      
+      return { 
+        title, 
+        links, 
+        images, 
+        text, 
+        meta,
+        warnings: { hasCaptcha, hasLogin }
+      };
     });
+    
+    // 警告检测
+    if (data.warnings.hasCaptcha) {
+      console.log('[警告] 页面可能包含验证码');
+    }
+    if (data.warnings.hasLogin) {
+      console.log('[信息] 页面包含登录表单');
+    }
     
     console.log(`[提取] 提取完成: ${data.links.length} 个链接, ${data.images.length} 个图片`);
     
     // ===== 截图 =====
     if (screenshotPath) {
       console.log(`[截图] 正在保存截图: ${screenshotPath}`);
+      
+      // 确保输出目录存在
+      const screenshotDir = path.dirname(screenshotPath);
+      if (screenshotDir && !fs.existsSync(screenshotDir)) {
+        fs.mkdirSync(screenshotDir, { recursive: true });
+      }
+      
       await page.screenshot({
         path: screenshotPath,
         fullPage: true
@@ -201,9 +310,14 @@ async function main() {
     // ===== 保存数据 =====
     const result = {
       url,
+      finalUrl,
       timestamp: new Date().toISOString(),
+      statusCode: response.status(),
       ...data
     };
+    
+    // 删除警告字段（不需要保存）
+    delete result.warnings;
     
     // 确保输出目录存在
     if (!fs.existsSync(CONFIG.outputDir)) {
@@ -228,19 +342,42 @@ async function main() {
     
   } catch (error) {
     console.error('[错误]', error.message);
+    
+    // 提供更详细的错误信息
+    if (error.message.includes('Failed to launch')) {
+      console.error('\n可能的原因:');
+      console.error('1. Chromium 未正确安装');
+      console.error('2. 缺少系统依赖库');
+      console.error('3. /dev/shm 不可用');
+      console.error('\n请确保已安装依赖:');
+      console.error('  apt install -y libnss3 libnspr4 libatk1.0-0 ...');
+    } else if (error.message.includes('net::ERR')) {
+      console.error('\n网络错误，请检查:');
+      console.error('1. 网络连接是否正常');
+      console.error('2. 目标网站是否可访问');
+    } else if (error.message.includes('timeout')) {
+      console.error('\n超时错误，请尝试:');
+      console.error('1. 增加超时时间');
+      console.error('2. 检查网络速度');
+    }
+    
     throw error;
   } finally {
     // 关闭浏览器
     if (browser) {
       console.log('[关闭] 正在关闭 Chromium...');
-      await browser.close();
-      console.log('[关闭] Chromium 已关闭');
+      try {
+        await browser.close();
+        console.log('[关闭] Chromium 已关闭');
+      } catch (e) {
+        console.log('[警告] 浏览器关闭时出错:', e.message);
+      }
     }
   }
 }
 
 // 运行
 main().catch(error => {
-  console.error('执行失败:', error);
+  console.error('\n执行失败:', error.message);
   process.exit(1);
 });
